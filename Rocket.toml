@@ -1,0 +1,4 @@
+
+[default.databases.imdb_db]
+url = "postgres://postgres:postgres@localhost:5432/lunatech_imdb"
+max_connections = 64
