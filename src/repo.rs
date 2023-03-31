@@ -1,6 +1,34 @@
-use rocket_db_pools::sqlx;
 
-use crate::schemas::{TitleBasics, TitlePrincipal};
+use rocket_db_pools::sqlx::{self, Row};
+use rocket_db_pools::sqlx::postgres::PgRow;
+
+use crate::schemas::{DbRow, TitleBasics, TitlePrincipal};
+
+struct MyPgRow<'a>(&'a PgRow);
+
+impl<'a> From<&'a PgRow> for MyPgRow<'a> {
+    fn from(value: &'a PgRow) -> Self {
+        MyPgRow(value)
+    }
+}
+
+impl<'a> DbRow for MyPgRow<'a> {
+    fn string(&self, column: &str) -> String {
+        self.0.get::<String, &str>(column)
+    }
+    fn i32(&self, column: &str) -> i32 {
+        self.0.get::<i32, &str>(column)
+    }
+    fn bool(&self, column: &str) -> bool {
+        self.0.try_get::<bool, &str>(column).unwrap_or(false)
+    }
+    fn opt_string(&self, column: &str) -> Option<String> {
+        self.0.try_get::<String, &str>(column).ok()
+    }
+    fn opt_i32(&self, column: &str) -> Option<i32> {
+        self.0.try_get::<i32, &str>(column).ok()
+    }
+}
 
 pub async fn titles_by_name(db_pool: &sqlx::PgPool, title_name: &str) -> Vec<TitleBasics> {
     let title_match = format!("%{}%", title_name);
@@ -15,7 +43,7 @@ pub async fn titles_by_name(db_pool: &sqlx::PgPool, title_name: &str) -> Vec<Tit
         .and_then(|rows| {
             let title_vec = rows
                 .iter()
-                .map(|r| TitleBasics::from_db_row(r))
+                .map(|r| TitleBasics::from_db_row(&MyPgRow::from(r)))
                 .collect::<Vec<TitleBasics>>();
 
             Ok(title_vec)
@@ -51,7 +79,7 @@ async fn principals_by_title(
         .and_then(|rows| {
             let principals = rows
                 .iter()
-                .map(|r| TitlePrincipal::from_db_row(r))
+                .map(|r| TitlePrincipal::from_db_row(&MyPgRow::from(r)))
                 .collect::<Vec<TitlePrincipal>>();
 
             Ok(principals)

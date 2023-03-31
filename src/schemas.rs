@@ -3,41 +3,39 @@ use rocket::serde::{Deserialize, Serialize};
 use rocket_okapi::okapi::schemars;
 use rocket_okapi::okapi::schemars::JsonSchema;
 
-use rocket_db_pools::sqlx::{postgres::PgRow, Row};
+pub trait DbRow {
+    fn string(&self, column: &str) -> String;
+    fn i32(&self, column: &str) -> i32;
+    fn bool(&self, column: &str) -> bool;
+    fn opt_string(&self, column: &str) -> Option<String>;
+    fn opt_i32(&self, column: &str) -> Option<i32>;
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(crate = "rocket::serde")]
 pub struct TitleBasics {
     tconst: String,
-    titletype: String,
-    primarytitle: String,
-    originaltitle: String,
-    startyear: i32,
-    runtimeminutes: i32,
-    genres: String,
+    titletype: Option<String>,
+    primarytitle: Option<String>,
+    originaltitle: Option<String>,
+    startyear: Option<i32>,
+    runtimeminutes: Option<i32>,
+    genres: Option<String>,
     isadult: bool,
     principals: Vec<TitlePrincipal>,
 }
 
 impl TitleBasics {
-    pub fn from_db_row(r: &PgRow) -> TitleBasics {
+    pub fn from_db_row(r: &dyn DbRow) -> TitleBasics {
         TitleBasics {
-            tconst: r.get::<String, &str>("tconst"),
-            titletype: r
-                .try_get::<String, &str>("titletype")
-                .unwrap_or("".to_string()),
-            primarytitle: r
-                .try_get::<String, &str>("primarytitle")
-                .unwrap_or("".to_string()),
-            originaltitle: r
-                .try_get::<String, &str>("originaltitle")
-                .unwrap_or("".to_string()),
-            startyear: r.try_get::<i32, &str>("startyear").unwrap_or(0),
-            runtimeminutes: r.try_get::<i32, &str>("runtimeminutes").unwrap_or(0),
-            genres: r
-                .try_get::<String, &str>("genres")
-                .unwrap_or("".to_string()),
-            isadult: r.try_get::<bool, &str>("isadult").unwrap_or(false),
+            tconst: r.string("tconst"),
+            titletype: r.opt_string("titletype"),
+            primarytitle: r.opt_string("primarytitle"),
+            originaltitle: r.opt_string("originaltitle"),
+            startyear: r.opt_i32("startyear"),
+            runtimeminutes: r.opt_i32("runtimeminutes"),
+            genres: r.opt_string("genres"),
+            isadult: r.bool("isadult"),
             principals: vec![],
         }
     }
@@ -55,28 +53,33 @@ impl TitleBasics {
 #[serde(crate = "rocket::serde")]
 pub struct TitlePrincipal {
     nconst: String,
-    category: String,
-    characters: String,
-    primaryname: String,
-    birthyear: i32,
-    deathyear: i32,
+    category: Option<String>,
+    characters: Option<String>,
+    primaryname: Option<String>,
+    birthyear: Option<i32>,
+    deathyear: Option<i32>,
 }
 
 impl TitlePrincipal {
-    pub fn from_db_row(r: &PgRow) -> TitlePrincipal {
+    pub fn from_db_row(r: &dyn DbRow) -> TitlePrincipal {
         TitlePrincipal {
-            nconst: r.get::<String, &str>("nconst"),
-            category: r
-                .try_get::<String, &str>("category")
-                .unwrap_or("".to_string()),
-            characters: r
-                .try_get::<String, &str>("characters")
-                .unwrap_or("".to_string()),
-            primaryname: r
-                .try_get::<String, &str>("primaryname")
-                .unwrap_or("".to_string()),
-            birthyear: r.try_get::<i32, &str>("birthyear").unwrap_or(0),
-            deathyear: r.try_get::<i32, &str>("deathyear").unwrap_or(0),
+            nconst: r.string("nconst"),
+            category: r.opt_string("category"),
+            characters: r.opt_string("characters"),
+            primaryname: r.opt_string("primaryname"),
+            birthyear: r.opt_i32("birthyear"),
+            deathyear: r.opt_i32("deathyear"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::schemas::DbRow;
+
+
+    #[test]
+    fn dummy() {
+        
     }
 }
