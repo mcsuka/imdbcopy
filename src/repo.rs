@@ -1,6 +1,5 @@
-
-use rocket_db_pools::sqlx::{self, Row};
 use rocket_db_pools::sqlx::postgres::PgRow;
+use rocket_db_pools::sqlx::{self, Row};
 
 use crate::schemas::{DbRow, TitleBasics, TitlePrincipal};
 
