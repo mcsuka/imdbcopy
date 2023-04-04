@@ -1,7 +1,13 @@
+use dashmap::DashMap;
+
+use dashmap::mapref::one::Ref;
 use rocket::serde::{Deserialize, Serialize};
 
 use rocket_okapi::okapi::schemars;
 use rocket_okapi::okapi::schemars::JsonSchema;
+
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub trait DbRow {
     fn string(&self, column: &str) -> String;
@@ -70,6 +76,58 @@ impl TitlePrincipal {
             birthyear: r.opt_i32("birthyear"),
             deathyear: r.opt_i32("deathyear"),
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct TitlePrincipalCache {
+    insert_counter: AtomicUsize,
+    t_to_p: DashMap<String, HashSet<String>>,
+    p_to_t: DashMap<String, HashSet<String>>,
+}
+
+impl TitlePrincipalCache {
+    pub fn new() -> TitlePrincipalCache {
+        TitlePrincipalCache {
+            insert_counter: AtomicUsize::new(0),
+            t_to_p: DashMap::with_capacity(1_500_000),
+            p_to_t: DashMap::with_capacity(1_500_000),
+        }
+    }
+
+    pub fn insert(&self, tconst: String, nconst: String) {
+        let mut entry = self.t_to_p.get_mut(&tconst);
+        if let Some(set) = entry.as_deref_mut() {
+            set.insert(nconst.clone());
+        } else {
+            let set: HashSet<String> = HashSet::from([nconst.clone()]);
+            self.t_to_p.insert(tconst.clone(), set);
+        }
+
+        let mut entry = self.p_to_t.get_mut(&nconst);
+        if let Some(set) = entry.as_deref_mut() {
+            set.insert(tconst);
+        } else {
+            let set: HashSet<String> = HashSet::from([tconst]);
+            self.p_to_t.insert(nconst, set);
+        }
+
+        let cntr = self.insert_counter.fetch_add(1, Ordering::Relaxed);
+        if cntr % 100000 == 0 {
+            println!("Processed {} mappings", cntr);
+        }
+    }
+
+    pub fn t_to_p(&self, tconst: &str) -> Option<Ref<'_, String, HashSet<String>>> {
+        self.t_to_p.get(tconst)
+    }
+
+    pub fn p_to_t(&self, nconst: &str) -> Option<Ref<'_, String, HashSet<String>>> {
+        self.p_to_t.get(nconst)
+    }
+
+    pub fn len(&self) -> (usize, usize) {
+        (self.t_to_p.len(), self.p_to_t.len())
     }
 }
 

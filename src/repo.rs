@@ -1,7 +1,11 @@
+use std::future;
+
+use rocket::futures::StreamExt;
+//use rocket_db_pools::Database;
 use rocket_db_pools::sqlx::postgres::PgRow;
 use rocket_db_pools::sqlx::{self, Row};
 
-use crate::schemas::{DbRow, TitleBasics, TitlePrincipal};
+use crate::schemas::{DbRow, TitleBasics, TitlePrincipal, TitlePrincipalCache};
 
 struct MyPgRow<'a>(&'a PgRow);
 
@@ -84,4 +88,24 @@ async fn principals_by_title(
             Ok(principals)
         })
         .ok()
+}
+
+pub async fn titles_to_principals(db_pool: &sqlx::PgPool, cache: &TitlePrincipalCache) {
+    let sql = "SELECT tconst, nconst FROM title_principals tp where category = 'actor'";
+    sqlx::query(sql)
+        .fetch(db_pool)
+        .for_each(|result| {
+            match result {
+                Ok(row) => {
+                    let tconst = row.get::<String, usize>(0);
+                    let nconst = row.get::<String, usize>(1);
+                    cache.insert(tconst, nconst);
+                }
+                Err(error) => {
+                    println!("Error reading DB row: {}", error);
+                }
+            }
+            future::ready(())
+        })
+        .await;
 }
