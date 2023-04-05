@@ -2,8 +2,11 @@
 extern crate rocket;
 
 use std::collections::HashSet;
+use std::sync::mpsc;
+use std::thread;
 use std::time::SystemTime;
 
+use dashmap::DashSet;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::serde::json::Json;
 use rocket::{Orbit, Rocket, State};
@@ -15,7 +18,8 @@ use rocket_okapi::{openapi, openapi_get_routes, rapidoc::*, swagger_ui::*};
 
 use rocket_db_pools::sqlx;
 use rocket_db_pools::Database;
-use schemas::TitlePrincipalCache;
+
+use crate::schemas::TitlePrincipalCache;
 
 mod repo;
 mod schemas;
@@ -43,7 +47,7 @@ async fn titles(db: &DbPool, title_fragment: &str) -> Json<Vec<schemas::TitleBas
 
 fn search_names(
     cache: &State<TitlePrincipalCache>,
-    ignored_names: &HashSet<String>,
+    ignored_names: &DashSet<String>,
     tconst: &str,
     nconst2: &str,
 ) -> (bool, HashSet<String>) {
@@ -89,8 +93,8 @@ impl NextRoute {
 
 fn search_route(
     cache: &State<TitlePrincipalCache>,
-    ignored_titles: &HashSet<String>,
-    ignored_names: &HashSet<String>,
+    ignored_titles: &DashSet<String>,
+    ignored_names: &DashSet<String>,
     route: &str,
     names_to_visit: &HashSet<String>,
     nconst2: &str,
@@ -138,62 +142,76 @@ fn search_route(
     NextRoute::search_further(visited_titles, next_level)
 }
 
-// for nconst in names {
-//     if let Some(titles) = cache.p_to_t(nconst) {
-//         let mut titles_to_visit: HashSet<String> = HashSet::new();
-//         for tconst in titles.value() {
-//             if !visited_titles.contains(tconst) {
-//                 titles_to_visit.insert(tconst.to_string());
-//                 visited_titles.insert(tconst.to_string());
-
-//                 let (success, names_to_visit) =
-//                     search_names(cache, visited_names, &tconst, nconst2);
-//                 if success {
-//                     println!(
-//                         "connections: {}: {} {} {} {}",
-//                         level, route, nconst, tconst, nconst2
-//                     );
-//                     let mut route2: Vec<String> = if route == "" {
-//                         Vec::new()
-//                     } else {
-//                         route
-//                             .split_whitespace()
-//                             .map(|x| x.to_string())
-//                             .collect::<Vec<String>>()
-//                     };
-//                     route2.append(&mut vec![
-//                         nconst.to_string(),
-//                         tconst.to_string(),
-//                         nconst2.to_string(),
-//                     ]);
-//                     return route2;
-//                 } else {
-//                     let new_route: String = format!("{} {} {}", route, nconst, tconst);
-//                     visited_names.extend(names_to_visit.clone());
-//                     next_level.push((new_route, names_to_visit));
-//                 }
-//             }
-//         }
-//     }
-
 fn search_titles(
     cache: &State<TitlePrincipalCache>,
-    visited_titles: &mut HashSet<String>,
-    visited_names: &mut HashSet<String>,
+    visited_titles: &mut DashSet<String>,
+    visited_names: &mut DashSet<String>,
     this_level: &Vec<(String, HashSet<String>)>,
     nconst2: &str,
     level: usize,
 ) -> Vec<String> {
     let mut next_level: Vec<(String, HashSet<String>)> = Vec::new();
+    let batch_size = 16;
 
-    for (route, names) in this_level {
-        let next_route = search_route(cache, visited_titles, visited_names, route, names, nconst2);
-        if let Some(success_route) = next_route.success_route {
-            return success_route;
-        } else {
-            next_level.extend(next_route.next_level);
-            visited_titles.extend(next_route.visited_titles);
-            visited_names.extend(names.clone());
+    if this_level.len() > batch_size {
+        let mut success_route: Option<Vec<String>> = None;
+
+        let chunks = this_level.chunks(batch_size);
+
+        for chunk in chunks {
+            let mut new_visited_titles: HashSet<String> = HashSet::new();
+            let mut new_visited_names: HashSet<String> = HashSet::new();
+
+            thread::scope(|scope| {
+                let mut thread_cnt = 0;
+                let (tx, rx) = mpsc::channel();
+                for (route, names) in chunk {
+                    let tx = tx.clone();
+
+                    let a: &DashSet<String> = visited_titles;
+                    let b: &DashSet<String> = visited_names;
+
+                    scope.spawn(move || {
+                        let next_route = search_route(cache, a, b, route, names, nconst2);
+                        tx.send(next_route)
+                            .expect("error sending message on channel!");
+                    });
+
+                    thread_cnt += 1;
+                    new_visited_names.extend(names.clone());
+                }
+                for _ in 0..thread_cnt {
+                    match rx.recv() {
+                        Ok(next_route) => {
+                            if next_route.success_route.is_some() {
+                                success_route = next_route.success_route;
+                            } else {
+                                next_level.extend(next_route.next_level);
+                                new_visited_titles.extend(next_route.visited_titles);
+                            }
+                        }
+                        Err(err) => println!("Error receiving message: {:?}", err),
+                    }
+                }
+            });
+
+            if let Some(result) = success_route {
+                return result;
+            }
+            visited_names.extend(new_visited_names);
+            visited_titles.extend(new_visited_titles);
+        }
+    } else {
+        for (route, names) in this_level {
+            let next_route =
+                search_route(cache, visited_titles, visited_names, route, names, nconst2);
+            if let Some(success_route) = next_route.success_route {
+                return success_route;
+            } else {
+                next_level.extend(next_route.next_level);
+                visited_titles.extend(next_route.visited_titles);
+                visited_names.extend(names.clone());
+            }
         }
     }
 
@@ -226,8 +244,8 @@ fn mk_string(list: &Vec<String>, delimiter: &str) -> String {
 #[get("/imdb/distance/principal/<nconst>?<nconst2>")]
 fn distance(cache: &State<TitlePrincipalCache>, nconst: &str, nconst2: &str) -> String {
     let start_time = SystemTime::now();
-    let mut visited_titles: HashSet<String> = HashSet::with_capacity(100000);
-    let mut visited_names: HashSet<String> = HashSet::with_capacity(100000);
+    let mut visited_titles: DashSet<String> = DashSet::with_capacity(100000);
+    let mut visited_names: DashSet<String> = DashSet::with_capacity(100000);
     let first_level = vec![("".to_owned(), HashSet::from([nconst.to_string()]))];
     let result = search_titles(
         cache,

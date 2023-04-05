@@ -9,6 +9,7 @@ edition = "2021"
 serde = "1.0.158"
 rocket_okapi = { version = "0.8.0-rc.2", features = ["swagger", "rapidoc"] }
 dashmap = "5.4.0"
+threadpool = "1.8.1"
 
 [dependencies.rocket]
 version = "=0.5.0-rc.2"
