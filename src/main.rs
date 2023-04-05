@@ -43,6 +43,7 @@ async fn titles(db: &DbPool, title_fragment: &str) -> Json<Vec<schemas::TitleBas
 
 fn search_names(
     cache: &State<TitlePrincipalCache>,
+    ignored_names: &HashSet<String>,
     tconst: &str,
     nconst2: &str,
 ) -> (bool, HashSet<String>) {
@@ -51,7 +52,7 @@ fn search_names(
         for nconst_i in names.value() {
             if nconst_i == nconst2 {
                 return (true, names_to_visit);
-            } else {
+            } else if !ignored_names.contains(nconst_i) {
                 names_to_visit.insert(nconst_i.to_string());
             }
         }
@@ -59,30 +60,55 @@ fn search_names(
     (false, names_to_visit)
 }
 
-fn search_titles(
+struct NextRoute {
+    success_route: Option<Vec<String>>,
+    visited_titles: HashSet<String>,
+    next_level: Vec<(String, HashSet<String>)>,
+}
+
+impl NextRoute {
+    fn found(route: Vec<String>) -> NextRoute {
+        NextRoute {
+            success_route: Some(route),
+            visited_titles: HashSet::from([]),
+            next_level: Vec::from([]),
+        }
+    }
+
+    fn search_further(
+        visited_titles: HashSet<String>,
+        next_level: Vec<(String, HashSet<String>)>,
+    ) -> NextRoute {
+        NextRoute {
+            success_route: None,
+            visited_titles: visited_titles,
+            next_level: next_level,
+        }
+    }
+}
+
+fn search_route(
     cache: &State<TitlePrincipalCache>,
-    visited_titles: &mut HashSet<String>,
-    this_level: &Vec<(String, HashSet<String>)>,
+    ignored_titles: &HashSet<String>,
+    ignored_names: &HashSet<String>,
+    route: &str,
+    names_to_visit: &HashSet<String>,
     nconst2: &str,
-    level: usize,
-) -> Vec<String> {
+) -> NextRoute {
+    let mut visited_titles: HashSet<String> = HashSet::new();
     let mut next_level: Vec<(String, HashSet<String>)> = Vec::new();
 
-    for (route, names) in this_level {
-        for nconst in names {
+    for nconst in names_to_visit {
+        if !ignored_names.contains(nconst) {
             if let Some(titles) = cache.p_to_t(nconst) {
                 let mut titles_to_visit: HashSet<String> = HashSet::new();
                 for tconst in titles.value() {
-                    if !visited_titles.contains(tconst) {
+                    if !ignored_titles.contains(tconst) && !visited_titles.contains(tconst) {
                         titles_to_visit.insert(tconst.to_string());
-                        visited_titles.insert(tconst.to_string());
 
-                        let (success, names_to_visit) = search_names(cache, &tconst, nconst2);
+                        let (success, names_to_visit2) =
+                            search_names(cache, ignored_names, &tconst, nconst2);
                         if success {
-                            println!(
-                                "connections: {}: {} {} {} {}",
-                                level, route, nconst, tconst, nconst2
-                            );
                             let mut route2: Vec<String> = if route == "" {
                                 Vec::new()
                             } else {
@@ -96,22 +122,104 @@ fn search_titles(
                                 tconst.to_string(),
                                 nconst2.to_string(),
                             ]);
-                            return route2;
+                            return NextRoute::found(route2);
                         } else {
-                            let new_route: String = format!("{} {} {}", route, nconst, tconst);
-                            next_level.push((new_route, names_to_visit));
+                            let route2: String = format!("{} {} {}", route, nconst, tconst);
+                            // visited_names.extend(names_to_visit.clone());
+                            next_level.push((route2, names_to_visit2));
                         }
                     }
                 }
+                visited_titles.extend(titles_to_visit);
             }
+        }
+    }
+
+    NextRoute::search_further(visited_titles, next_level)
+}
+
+// for nconst in names {
+//     if let Some(titles) = cache.p_to_t(nconst) {
+//         let mut titles_to_visit: HashSet<String> = HashSet::new();
+//         for tconst in titles.value() {
+//             if !visited_titles.contains(tconst) {
+//                 titles_to_visit.insert(tconst.to_string());
+//                 visited_titles.insert(tconst.to_string());
+
+//                 let (success, names_to_visit) =
+//                     search_names(cache, visited_names, &tconst, nconst2);
+//                 if success {
+//                     println!(
+//                         "connections: {}: {} {} {} {}",
+//                         level, route, nconst, tconst, nconst2
+//                     );
+//                     let mut route2: Vec<String> = if route == "" {
+//                         Vec::new()
+//                     } else {
+//                         route
+//                             .split_whitespace()
+//                             .map(|x| x.to_string())
+//                             .collect::<Vec<String>>()
+//                     };
+//                     route2.append(&mut vec![
+//                         nconst.to_string(),
+//                         tconst.to_string(),
+//                         nconst2.to_string(),
+//                     ]);
+//                     return route2;
+//                 } else {
+//                     let new_route: String = format!("{} {} {}", route, nconst, tconst);
+//                     visited_names.extend(names_to_visit.clone());
+//                     next_level.push((new_route, names_to_visit));
+//                 }
+//             }
+//         }
+//     }
+
+fn search_titles(
+    cache: &State<TitlePrincipalCache>,
+    visited_titles: &mut HashSet<String>,
+    visited_names: &mut HashSet<String>,
+    this_level: &Vec<(String, HashSet<String>)>,
+    nconst2: &str,
+    level: usize,
+) -> Vec<String> {
+    let mut next_level: Vec<(String, HashSet<String>)> = Vec::new();
+
+    for (route, names) in this_level {
+        let next_route = search_route(cache, visited_titles, visited_names, route, names, nconst2);
+        if let Some(success_route) = next_route.success_route {
+            return success_route;
+        } else {
+            next_level.extend(next_route.next_level);
+            visited_titles.extend(next_route.visited_titles);
+            visited_names.extend(names.clone());
         }
     }
 
     if level > 9 || next_level.is_empty() {
         vec![]
     } else {
-        search_titles(cache, visited_titles, &next_level, nconst2, level + 1)
+        search_titles(
+            cache,
+            visited_titles,
+            visited_names,
+            &next_level,
+            nconst2,
+            level + 1,
+        )
     }
+}
+
+fn mk_string(list: &Vec<String>, delimiter: &str) -> String {
+    let mut str = String::new();
+    let mut dl = "";
+    for s in list {
+        str.push_str(dl);
+        str.push_str(&s);
+        dl = delimiter;
+    }
+    str
 }
 
 #[openapi(tag = "IMDB")]
@@ -119,8 +227,16 @@ fn search_titles(
 fn distance(cache: &State<TitlePrincipalCache>, nconst: &str, nconst2: &str) -> String {
     let start_time = SystemTime::now();
     let mut visited_titles: HashSet<String> = HashSet::with_capacity(100000);
+    let mut visited_names: HashSet<String> = HashSet::with_capacity(100000);
     let first_level = vec![("".to_owned(), HashSet::from([nconst.to_string()]))];
-    let result = search_titles(cache, &mut visited_titles, &first_level, nconst2, 1);
+    let result = search_titles(
+        cache,
+        &mut visited_titles,
+        &mut visited_names,
+        &first_level,
+        nconst2,
+        1,
+    );
 
     let mut txt = String::new();
     if result.is_empty() {
@@ -128,16 +244,12 @@ fn distance(cache: &State<TitlePrincipalCache>, nconst: &str, nconst2: &str) -> 
             "**** no result for {} -> {} ****",
             nconst, nconst2
         ));
-        println!("{txt}");
     } else {
+        let str = mk_string(&result, " -> ");
         txt.push_str(&format!("steps: {} ", (result.len() - 1) / 2));
-        txt.push_str(
-            &result
-                .iter()
-                .map(|x| format!("{} -> ", x))
-                .collect::<String>(),
-        );
+        txt.push_str(&str);
     }
+    println!("{txt}");
     println!("search time: {:?}", start_time.elapsed().unwrap());
 
     txt
