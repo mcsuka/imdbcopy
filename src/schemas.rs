@@ -79,6 +79,46 @@ impl TitlePrincipal {
     }
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(crate = "rocket::serde")]
+pub struct NameToTitle {
+    nconst: String,
+    primaryname: Option<String>,
+    characters: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(crate = "rocket::serde")]
+pub struct TitleToNames {
+    tconst: String,
+    primarytitle: Option<String>,
+    titletype: Option<String>,
+    startyear: Option<i32>,
+    actor1: NameToTitle,
+    actor2: NameToTitle,
+}
+
+impl TitleToNames {
+    pub fn from_db_row(r: &dyn DbRow) -> TitleToNames {
+        TitleToNames {
+            tconst: r.string("tconst"),
+            primarytitle: r.opt_string("primarytitle"),
+            titletype: r.opt_string("titletype"),
+            startyear: r.opt_i32("startyear"),
+            actor1: NameToTitle {
+                nconst: r.string("nconst1"),
+                primaryname: r.opt_string("primaryname1"),
+                characters: r.opt_string("characters1"),
+            },
+            actor2: NameToTitle {
+                nconst: r.string("nconst2"),
+                primaryname: r.opt_string("primaryname2"),
+                characters: r.opt_string("characters2"),
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TitlePrincipalCache {
     insert_counter: AtomicUsize,

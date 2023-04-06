@@ -1,11 +1,10 @@
 use std::future;
 
 use rocket::futures::StreamExt;
-//use rocket_db_pools::Database;
 use rocket_db_pools::sqlx::postgres::PgRow;
 use rocket_db_pools::sqlx::{self, Row};
 
-use crate::schemas::{DbRow, TitleBasics, TitlePrincipal, TitlePrincipalCache};
+use crate::schemas::{DbRow, TitleBasics, TitlePrincipal, TitlePrincipalCache, TitleToNames};
 
 struct MyPgRow<'a>(&'a PgRow);
 
@@ -108,4 +107,30 @@ pub async fn titles_to_principals(db_pool: &sqlx::PgPool, cache: &TitlePrincipal
             future::ready(())
         })
         .await;
+}
+
+pub async fn title_to_names(
+    db_pool: &sqlx::PgPool,
+    tconst: &str,
+    nconst1: &str,
+    nconst2: &str,
+) -> Option<TitleToNames> {
+    let sql = "SELECT tb.tconst, tb.primarytitle, tb.startyear, tb.titletype, tp1.nconst nconst1, tp1.characters characters1, nb1.primaryname primaryname1, tp2.nconst nconst2, tp2.characters characters2, nb2.primaryname primaryname2
+    FROM title_basics tb 
+    JOIN title_principals tp1 ON tp1.tconst = tb.tconst AND tp1.nconst = $1 
+    JOIN title_principals tp2 ON tp2.tconst = tb.tconst AND tp2.nconst = $2 
+    JOIN name_basics nb1 ON nb1.nconst = tp1.nconst  
+    JOIN name_basics nb2 ON nb2.nconst = tp2.nconst    
+    WHERE tb.tconst = $3";
+    sqlx::query(sql)
+        .bind(nconst1)
+        .bind(nconst2)
+        .bind(tconst)
+        .fetch_one(db_pool)
+        .await
+        .and_then(|r| {
+            let title_to_names = TitleToNames::from_db_row(&MyPgRow::from(&r));
+            Ok(title_to_names)
+        })
+        .ok()
 }
