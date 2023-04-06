@@ -2,11 +2,10 @@
 extern crate rocket;
 
 use std::collections::HashSet;
-use std::sync::mpsc;
-use std::thread;
 use std::time::SystemTime;
 
 use dashmap::DashSet;
+use rayon::prelude::*;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::serde::json::Json;
 use rocket::{Orbit, Rocket, State};
@@ -58,6 +57,7 @@ fn search_names(
                 return (true, names_to_visit);
             } else if !ignored_names.contains(nconst_i) {
                 names_to_visit.insert(nconst_i.to_string());
+                ignored_names.insert(nconst_i.to_string());
             }
         }
     }
@@ -66,26 +66,27 @@ fn search_names(
 
 struct NextRoute {
     success_route: Option<Vec<String>>,
-    visited_titles: HashSet<String>,
     next_level: Vec<(String, HashSet<String>)>,
 }
 
 impl NextRoute {
-    fn found(route: Vec<String>) -> NextRoute {
+    fn new() -> NextRoute {
         NextRoute {
-            success_route: Some(route),
-            visited_titles: HashSet::from([]),
+            success_route: None,
             next_level: Vec::from([]),
         }
     }
 
-    fn search_further(
-        visited_titles: HashSet<String>,
-        next_level: Vec<(String, HashSet<String>)>,
-    ) -> NextRoute {
+    fn found(route: Vec<String>) -> NextRoute {
+        NextRoute {
+            success_route: Some(route),
+            next_level: Vec::from([]),
+        }
+    }
+
+    fn search_further(next_level: Vec<(String, HashSet<String>)>) -> NextRoute {
         NextRoute {
             success_route: None,
-            visited_titles: visited_titles,
             next_level: next_level,
         }
     }
@@ -99,50 +100,45 @@ fn search_route(
     names_to_visit: &HashSet<String>,
     nconst2: &str,
 ) -> NextRoute {
-    let mut visited_titles: HashSet<String> = HashSet::new();
     let mut next_level: Vec<(String, HashSet<String>)> = Vec::new();
 
     for nconst in names_to_visit {
-        if !ignored_names.contains(nconst) {
-            if let Some(titles) = cache.p_to_t(nconst) {
-                let mut titles_to_visit: HashSet<String> = HashSet::new();
-                for tconst in titles.value() {
-                    if !ignored_titles.contains(tconst) && !visited_titles.contains(tconst) {
-                        titles_to_visit.insert(tconst.to_string());
+        if let Some(titles) = cache.p_to_t(nconst) {
+            for tconst in titles.value() {
+                if !ignored_titles.contains(tconst) {
+                    ignored_titles.insert(tconst.to_string());
 
-                        let (success, names_to_visit2) =
-                            search_names(cache, ignored_names, &tconst, nconst2);
-                        if success {
-                            let mut route2: Vec<String> = if route == "" {
-                                Vec::new()
-                            } else {
-                                route
-                                    .split_whitespace()
-                                    .map(|x| x.to_string())
-                                    .collect::<Vec<String>>()
-                            };
-                            route2.append(&mut vec![
-                                nconst.to_string(),
-                                tconst.to_string(),
-                                nconst2.to_string(),
-                            ]);
-                            return NextRoute::found(route2);
+                    let (success, names_to_visit2) =
+                        search_names(cache, ignored_names, &tconst, nconst2);
+                    if success {
+                        let mut route2: Vec<String> = if route == "" {
+                            Vec::new()
                         } else {
-                            let route2: String = format!("{} {} {}", route, nconst, tconst);
-                            // visited_names.extend(names_to_visit.clone());
-                            next_level.push((route2, names_to_visit2));
-                        }
+                            route
+                                .split_whitespace()
+                                .map(|x| x.to_string())
+                                .collect::<Vec<String>>()
+                        };
+                        route2.append(&mut vec![
+                            nconst.to_string(),
+                            tconst.to_string(),
+                            nconst2.to_string(),
+                        ]);
+                        return NextRoute::found(route2);
+                    } else {
+                        let route2: String = format!("{} {} {}", route, nconst, tconst);
+                        // visited_names.extend(names_to_visit.clone());
+                        next_level.push((route2, names_to_visit2));
                     }
                 }
-                visited_titles.extend(titles_to_visit);
             }
         }
     }
 
-    NextRoute::search_further(visited_titles, next_level)
+    NextRoute::search_further(next_level)
 }
 
-fn search_titles(
+fn par_search_titles(
     cache: &State<TitlePrincipalCache>,
     visited_titles: &mut DashSet<String>,
     visited_names: &mut DashSet<String>,
@@ -151,74 +147,82 @@ fn search_titles(
     level: usize,
 ) -> Vec<String> {
     let mut next_level: Vec<(String, HashSet<String>)> = Vec::new();
-    let batch_size = 16;
+    let batch_size = 1000;
 
-    if this_level.len() > batch_size {
-        let mut success_route: Option<Vec<String>> = None;
-
-        let chunks = this_level.chunks(batch_size);
-
-        for chunk in chunks {
-            let mut new_visited_titles: HashSet<String> = HashSet::new();
-            let mut new_visited_names: HashSet<String> = HashSet::new();
-
-            thread::scope(|scope| {
-                let mut thread_cnt = 0;
-                let (tx, rx) = mpsc::channel();
-                for (route, names) in chunk {
-                    let tx = tx.clone();
-
-                    let a: &DashSet<String> = visited_titles;
-                    let b: &DashSet<String> = visited_names;
-
-                    scope.spawn(move || {
-                        let next_route = search_route(cache, a, b, route, names, nconst2);
-                        tx.send(next_route)
-                            .expect("error sending message on channel!");
-                    });
-
-                    thread_cnt += 1;
-                    new_visited_names.extend(names.clone());
-                }
-                for _ in 0..thread_cnt {
-                    match rx.recv() {
-                        Ok(next_route) => {
-                            if next_route.success_route.is_some() {
-                                success_route = next_route.success_route;
-                            } else {
-                                next_level.extend(next_route.next_level);
-                                new_visited_titles.extend(next_route.visited_titles);
-                            }
-                        }
-                        Err(err) => println!("Error receiving message: {:?}", err),
+    for chunk in this_level.chunks(batch_size) {
+        let next_route = chunk
+            .par_iter()
+            .map(|(route, names)| {
+                search_route(cache, visited_titles, visited_names, route, names, nconst2)
+            })
+            .reduce(
+                || NextRoute::new(),
+                |mut all_routes, next_route| {
+                    all_routes.next_level.extend(next_route.next_level);
+                    NextRoute {
+                        success_route: all_routes
+                            .success_route
+                            .clone()
+                            .or(next_route.success_route),
+                        next_level: all_routes.next_level,
                     }
-                }
-            });
-
-            if let Some(result) = success_route {
-                return result;
-            }
-            visited_names.extend(new_visited_names);
-            visited_titles.extend(new_visited_titles);
-        }
-    } else {
-        for (route, names) in this_level {
-            let next_route =
-                search_route(cache, visited_titles, visited_names, route, names, nconst2);
-            if let Some(success_route) = next_route.success_route {
-                return success_route;
-            } else {
-                next_level.extend(next_route.next_level);
-                visited_titles.extend(next_route.visited_titles);
-                visited_names.extend(names.clone());
-            }
+                },
+            );
+        if let Some(route) = next_route.success_route {
+            return route;
+        } else {
+            next_level.extend(next_route.next_level);
         }
     }
 
     if level > 9 || next_level.is_empty() {
         vec![]
     } else {
+        par_search_titles(
+            cache,
+            visited_titles,
+            visited_names,
+            &next_level,
+            nconst2,
+            level + 1,
+        )
+    }
+}
+
+fn search_titles(
+    do_parallel: bool,
+    cache: &State<TitlePrincipalCache>,
+    visited_titles: &mut DashSet<String>,
+    visited_names: &mut DashSet<String>,
+    this_level: &Vec<(String, HashSet<String>)>,
+    nconst2: &str,
+    level: usize,
+) -> Vec<String> {
+    let mut next_level: Vec<(String, HashSet<String>)> = Vec::new();
+
+    for (route, names) in this_level {
+        let next_route = search_route(cache, visited_titles, visited_names, route, names, nconst2);
+        if let Some(success_route) = next_route.success_route {
+            return success_route;
+        } else {
+            next_level.extend(next_route.next_level);
+        }
+    }
+
+    if level > 9 || next_level.is_empty() {
+        vec![]
+    } else if do_parallel && level > 1 {
+        par_search_titles(
+            cache,
+            visited_titles,
+            visited_names,
+            &next_level,
+            nconst2,
+            level + 1,
+        )
+    } else {
         search_titles(
+            do_parallel,
             cache,
             visited_titles,
             visited_names,
@@ -240,35 +244,39 @@ fn mk_string(list: &Vec<String>, delimiter: &str) -> String {
     str
 }
 
+/// Search the shortest path between 2 actors
 #[openapi(tag = "IMDB")]
-#[get("/imdb/distance/principal/<nconst>?<nconst2>")]
-fn distance(cache: &State<TitlePrincipalCache>, nconst: &str, nconst2: &str) -> String {
+#[get("/imdb/distance/principal/<nconst>?<target>&<parallel>")]
+fn distance(
+    cache: &State<TitlePrincipalCache>,
+    nconst: &str,
+    target: &str,
+    parallel: bool,
+) -> String {
     let start_time = SystemTime::now();
     let mut visited_titles: DashSet<String> = DashSet::with_capacity(100000);
     let mut visited_names: DashSet<String> = DashSet::with_capacity(100000);
     let first_level = vec![("".to_owned(), HashSet::from([nconst.to_string()]))];
     let result = search_titles(
+        parallel,
         cache,
         &mut visited_titles,
         &mut visited_names,
         &first_level,
-        nconst2,
+        target,
         1,
     );
 
     let mut txt = String::new();
     if result.is_empty() {
-        txt.push_str(&format!(
-            "**** no result for {} -> {} ****",
-            nconst, nconst2
-        ));
+        txt.push_str(&format!("**** no result for {} -> {} ****", nconst, target));
     } else {
         let str = mk_string(&result, " -> ");
         txt.push_str(&format!("steps: {} ", (result.len() - 1) / 2));
         txt.push_str(&str);
     }
+    txt = format!("{}\nSearch time: {:?}", txt, start_time.elapsed().unwrap());
     println!("{txt}");
-    println!("search time: {:?}", start_time.elapsed().unwrap());
 
     txt
 }
