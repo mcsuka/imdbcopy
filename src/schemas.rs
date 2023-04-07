@@ -15,6 +15,7 @@ pub trait DbRow {
     fn bool(&self, column: &str) -> bool;
     fn opt_string(&self, column: &str) -> Option<String>;
     fn opt_i32(&self, column: &str) -> Option<i32>;
+    fn opt_f64(&self, column: &str) -> Option<f64>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -23,12 +24,7 @@ pub struct TitleBasics {
     tconst: String,
     titletype: Option<String>,
     primarytitle: Option<String>,
-    originaltitle: Option<String>,
     startyear: Option<i32>,
-    runtimeminutes: Option<i32>,
-    genres: Option<String>,
-    isadult: bool,
-    principals: Vec<TitlePrincipal>,
 }
 
 impl TitleBasics {
@@ -37,7 +33,46 @@ impl TitleBasics {
             tconst: r.string("tconst"),
             titletype: r.opt_string("titletype"),
             primarytitle: r.opt_string("primarytitle"),
+            startyear: r.opt_i32("startyear"),
+        }
+    }
+
+    pub fn from_tconst(tconst: &str) -> TitleBasics {
+        TitleBasics {
+            tconst: tconst.to_string(),
+            titletype: None,
+            primarytitle: None,
+            startyear: None,
+        }
+    }
+
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(crate = "rocket::serde")]
+pub struct TitleDetails {
+    tconst: String,
+    titletype: Option<String>,
+    primarytitle: Option<String>,
+    originaltitle: Option<String>,
+    averagerating: Option<f64>,
+    numvotes: Option<i32>,
+    startyear: Option<i32>,
+    runtimeminutes: Option<i32>,
+    genres: Option<String>,
+    isadult: bool,
+    principals: Vec<TitlePrincipal>,
+}
+
+impl TitleDetails {
+    pub fn from_db_row(r: &dyn DbRow) -> TitleDetails {
+        TitleDetails {
+            tconst: r.string("tconst"),
+            titletype: r.opt_string("titletype"),
+            primarytitle: r.opt_string("primarytitle"),
             originaltitle: r.opt_string("originaltitle"),
+            averagerating: r.opt_f64("averagerating"),
+            numvotes: r.opt_i32("numvotes"),
             startyear: r.opt_i32("startyear"),
             runtimeminutes: r.opt_i32("runtimeminutes"),
             genres: r.opt_string("genres"),
@@ -119,6 +154,49 @@ impl TitleToNames {
     }
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(crate = "rocket::serde")]
+pub struct NameBasics {
+    nconst: String,
+    pub actorroles: usize,
+    primaryname: Option<String>,
+    primaryprofession: Option<String>,
+    birthyear: Option<i32>,
+    deathyear: Option<i32>,
+    knownfortitles: Vec<TitleBasics>,
+}
+
+impl NameBasics {
+    pub fn from_db_row(r: &dyn DbRow) -> NameBasics {
+        let mut knownfortitles: Vec<TitleBasics> = vec![];
+        if let Some(kt) = r.opt_string("knownfortitles") {
+            kt.split(",")
+                .for_each(|tconst| knownfortitles.push(TitleBasics::from_tconst(tconst)));
+        }
+        NameBasics {
+            nconst: r.string("nconst"),
+            actorroles: 0,
+            primaryname: r.opt_string("primaryname"),
+            primaryprofession: r.opt_string("primaryprofession"),
+            birthyear: r.opt_i32("birthyear"),
+            deathyear: r.opt_i32("deathyear"),
+            knownfortitles: knownfortitles,
+        }
+    }
+
+    pub fn title_ids(&self) -> Vec<String> {
+        self.knownfortitles
+            .iter()
+            .map(|t| t.tconst.to_string())
+            .collect()
+    }
+
+    pub fn set_details(&mut self, references: usize, titles: Vec<TitleBasics>) {
+        self.actorroles = references;
+        self.knownfortitles = titles;
+    }
+}
+
 #[derive(Debug)]
 pub struct TitlePrincipalCache {
     insert_counter: AtomicUsize,
@@ -169,13 +247,17 @@ impl TitlePrincipalCache {
     pub fn len(&self) -> (usize, usize) {
         (self.t_to_p.len(), self.p_to_t.len())
     }
+
+    pub fn ref_count(&self, name_basics: &NameBasics) -> usize {
+        self.p_to_t.get(&name_basics.nconst).map_or(0, |x| x.len())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use crate::schemas::{DbRow, TitleBasics, TitlePrincipal};
+    use crate::schemas::{DbRow, TitleDetails, TitlePrincipal};
 
     struct TestDbRow<'r> {
         map: HashMap<&'static str, &'r str>,
@@ -204,6 +286,10 @@ mod tests {
         fn opt_i32(&self, column: &str) -> Option<i32> {
             self.map.get(column).map(|x| x.parse::<i32>().unwrap())
         }
+
+        fn opt_f64(&self, column: &str) -> Option<f64> {
+            self.map.get(column).map(|x| x.parse::<f64>().unwrap())
+        }
     }
 
     const TCONST: &str = "value1";
@@ -214,6 +300,8 @@ mod tests {
     const RUNTIMEMINUTES: i32 = 234;
     const GENRES: &str = "[value5, value6]";
     const ISADULT: bool = true;
+    const AVERAGERATING: f64 = 3.33;
+    const NUMVOTES: i32 = 666;
 
     const NCONST: &str = "value7";
     const CATEGORY: &str = "value8";
@@ -223,12 +311,14 @@ mod tests {
     const DEATHYEAR: i32 = 1999;
 
     #[test]
-    fn title_basics_from_db_row_optionals() {
-        let title_basics = TitleBasics {
+    fn title_details_from_db_row_optionals() {
+        let title_basics = TitleDetails {
             tconst: TCONST.to_string(),
             titletype: Some(TITLETYPE.to_string()),
             primarytitle: Some(PRIMARYTITLE.to_string()),
             originaltitle: Some(ORIGINALTITLE.to_string()),
+            averagerating: Some(AVERAGERATING),
+            numvotes: Some(NUMVOTES),
             startyear: Some(STARTYEAR),
             runtimeminutes: Some(RUNTIMEMINUTES),
             genres: Some(GENRES.to_string()),
@@ -239,18 +329,22 @@ mod tests {
         let startyear = STARTYEAR.to_string();
         let runtimeminutes = RUNTIMEMINUTES.to_string();
         let isadult = ISADULT.to_string();
+        let averagerating = AVERAGERATING.to_string();
+        let numvotes = NUMVOTES.to_string();
         let map: HashMap<&'static str, &str> = HashMap::from([
             ("tconst", TCONST),
             ("titletype", TITLETYPE),
             ("primarytitle", PRIMARYTITLE),
             ("originaltitle", ORIGINALTITLE),
+            ("averagerating", &averagerating),
+            ("numvotes", &numvotes),
             ("startyear", &startyear),
             ("runtimeminutes", &runtimeminutes),
             ("genres", &GENRES),
             ("isadult", &isadult),
         ]);
         let row = TestDbRow { map };
-        let new_title_basics = TitleBasics::from_db_row(&row);
+        let new_title_basics = TitleDetails::from_db_row(&row);
 
         assert_eq!(new_title_basics.tconst, title_basics.tconst);
         assert_eq!(new_title_basics.titletype, title_basics.titletype);
@@ -264,11 +358,13 @@ mod tests {
 
     #[test]
     fn title_basics_from_db_row_mandatory() {
-        let title_basics = TitleBasics {
+        let title_basics = TitleDetails {
             tconst: TCONST.to_string(),
             titletype: None,
             primarytitle: None,
             originaltitle: None,
+            averagerating: None,
+            numvotes: None,
             startyear: None,
             runtimeminutes: None,
             genres: None,
@@ -278,7 +374,7 @@ mod tests {
 
         let map: HashMap<&'static str, &str> = HashMap::from([("tconst", TCONST)]);
         let row = TestDbRow { map };
-        let new_title_basics = TitleBasics::from_db_row(&row);
+        let new_title_basics = TitleDetails::from_db_row(&row);
 
         assert_eq!(new_title_basics.tconst, title_basics.tconst);
         assert!(new_title_basics.titletype.is_none());

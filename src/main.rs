@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use dashmap::DashSet;
 use rocket::fairing::{Fairing, Info, Kind};
-use rocket::response::status::NotFound;
+use rocket::http::Status;
 use rocket::serde::json::Json;
 use rocket::{Orbit, Rocket, State};
 
@@ -38,22 +38,77 @@ impl<'r> OpenApiFromRequest<'r> for &'r DbPool {
     }
 }
 
-/// Search a film or other moving picture by a title fragment
+/// Search films or other moving pictures by a title fragment
 #[openapi(tag = "IMDB")]
 #[get("/imdb/title?<title_fragment>")]
-async fn titles(db: &DbPool, title_fragment: &str) -> Json<Vec<schemas::TitleBasics>> {
-    Json(repo::titles_by_name(&db.0, title_fragment).await)
+async fn titles(
+    db: &DbPool,
+    title_fragment: &str,
+) -> Result<Json<Vec<schemas::TitleDetails>>, (Status, String)> {
+    let result = repo::titles_by_name(&db.0, title_fragment).await?;
+    Ok(Json(result))
 }
 
-fn mk_string(list: &Vec<String>, delimiter: &str) -> String {
-    let mut str = String::new();
-    let mut dl = "";
-    for s in list {
-        str.push_str(dl);
-        str.push_str(&s);
-        dl = delimiter;
+/// Search for contributors by name
+#[openapi(tag = "IMDB")]
+#[get("/imdb/principal?<name>")]
+async fn contributor(
+    db: &DbPool,
+    cache: &State<schemas::TitlePrincipalCache>,
+    name: &str,
+) -> Result<Json<Vec<schemas::NameBasics>>, String> {
+    let result = repo::basics_for_name(&db.0, cache, name).await;
+    match result {
+        Ok(names) => Ok(Json(names)),
+        Err(err) => Err(format!("{:?}", err)),
     }
-    str
+}
+
+fn busiest_actor(
+    cache: &State<schemas::TitlePrincipalCache>,
+    nconsts: Vec<String>,
+) -> Option<String> {
+    if nconsts.is_empty() {
+        None
+    } else {
+        let mut busiest: (String, usize) = (nconsts[0].clone(), 0);
+        for nconst in nconsts {
+            let score = cache.p_to_t(&nconst).map_or(0, |x| x.len());
+            if score > busiest.1 {
+                busiest = (nconst, score);
+            }
+        }
+        Some(busiest.0.to_string())
+    }
+}
+
+/// Search the **shortest path between 2 actors**, identified by name.<br/>
+/// In case two actors have the same name, the one with the most films will be used
+#[openapi(tag = "IMDB")]
+#[get("/imdb/distance?<name1>&<name2>&<parallel>")]
+async fn name_distance(
+    db_pool: &DbPool,
+    cache: &State<schemas::TitlePrincipalCache>,
+    name1: &str,
+    name2: &str,
+    parallel: bool,
+) -> Result<Json<DistanceResult>, (Status, String)> {
+    if let Some(nconst1) = busiest_actor(cache, repo::nconst_for_name(&db_pool.0, name1).await?) {
+        if let Some(nconst2) = busiest_actor(cache, repo::nconst_for_name(&db_pool.0, name2).await?)
+        {
+            distance(db_pool, cache, &nconst1, &nconst2, parallel).await
+        } else {
+            Err((
+                Status::NotFound,
+                format!("Could not find Contributor {}", name2),
+            ))
+        }
+    } else {
+        Err((
+            Status::NotFound,
+            format!("Could not find Contributor {}", name1),
+        ))
+    }
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -64,27 +119,27 @@ struct DistanceResult {
     connection_path: Vec<schemas::TitleToNames>,
 }
 
-/// Search the shortest path between 2 actors
+/// Search the shortest path between 2 actors, identified by their id
 #[openapi(tag = "IMDB")]
-#[get("/imdb/distance/principal/<nconst>?<target>&<parallel>")]
+#[get("/imdb/distance/principal/<nconst1>?<nconst2>&<parallel>")]
 async fn distance(
     db_pool: &DbPool,
     cache: &State<schemas::TitlePrincipalCache>,
-    nconst: &str,
-    target: &str,
+    nconst1: &str,
+    nconst2: &str,
     parallel: bool,
-) -> Result<Json<DistanceResult>, NotFound<String>> {
+) -> Result<Json<DistanceResult>, (Status, String)> {
     let start_time = SystemTime::now();
     let mut visited_titles: DashSet<String> = DashSet::with_capacity(100000);
     let mut visited_names: DashSet<String> = DashSet::with_capacity(100000);
-    let first_level = vec![("".to_owned(), HashSet::from([nconst.to_string()]))];
+    let first_level = vec![("".to_owned(), HashSet::from([nconst1.to_string()]))];
     let result = kevinbacon::search_titles(
         parallel,
         cache,
         &mut visited_titles,
         &mut visited_names,
         &first_level,
-        target,
+        nconst2,
         1,
     );
 
@@ -104,17 +159,14 @@ async fn distance(
                 let mut connection_path: Vec<schemas::TitleToNames> = Vec::new();
                 for i in 0..separation_degree {
                     let idx: usize = (i * 2).try_into().unwrap();
-                    match repo::title_to_names(
+                    let step = repo::title_to_names(
                         db_pool,
                         &route[idx + 1],
                         &route[idx],
                         &route[idx + 2],
                     )
-                    .await
-                    {
-                        Some(step) => connection_path.push(step),
-                        None => {}
-                    }
+                    .await?;
+                    connection_path.push(step);
                 }
 
                 Ok(Json(DistanceResult {
@@ -124,7 +176,10 @@ async fn distance(
                 }))
             }
         }
-        Err(err) => Err(NotFound(format!("Could not find actor with ID {}", err.0))),
+        Err(err) => Err((
+            Status::NotFound,
+            format!("Could not find actor with ID {}", err.0),
+        )),
     }
 }
 
@@ -172,7 +227,10 @@ fn rocket() -> _ {
         .manage(schemas::TitlePrincipalCache::new())
         .attach(DbPool::init())
         .attach(TitlePrincipalCacheLoader::init())
-        .mount("/", openapi_get_routes![titles, distance])
+        .mount(
+            "/",
+            openapi_get_routes![titles, contributor, name_distance, distance],
+        )
         .mount(
             "/swagger-ui/",
             make_swagger_ui(&SwaggerUIConfig {
