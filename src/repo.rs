@@ -2,9 +2,11 @@ use std::future;
 
 use rocket::futures::StreamExt;
 use rocket_db_pools::sqlx::postgres::PgRow;
-use rocket_db_pools::sqlx::{self, Row};
+use rocket_db_pools::sqlx::{self, Error, Row};
 
-use crate::schemas::{DbRow, TitleBasics, TitlePrincipal, TitlePrincipalCache, TitleToNames};
+use crate::schemas::{
+    DbRow, NameBasics, TitleBasics, TitlePrincipal, TitlePrincipalCache, TitleToNames, TitleDetails,
+};
 
 struct MyPgRow<'a>(&'a PgRow);
 
@@ -30,12 +32,16 @@ impl<'a> DbRow for MyPgRow<'a> {
     fn opt_i32(&self, column: &str) -> Option<i32> {
         self.0.try_get::<i32, &str>(column).ok()
     }
+    fn opt_f32(&self, column: &str) -> Option<f32> {
+        self.0.try_get::<f32, &str>(column).ok()
+    }
 }
 
-pub async fn titles_by_name(db_pool: &sqlx::PgPool, title_name: &str) -> Vec<TitleBasics> {
+pub async fn titles_by_name(db_pool: &sqlx::PgPool, title_name: &str) -> Vec<TitleDetails> {
     let title_match = format!("%{}%", title_name);
-    let sql = "SELECT * FROM title_basics 
-    WHERE titletype = 'movie' AND (primarytitle ilike $1 or originaltitle ilike $2)
+    let sql = "SELECT tb.*, tr.numvotes, tr.averagerating FROM title_basics tb
+    JOIN title_ratings tr ON tr.tconst = tb.tconst
+    WHERE tb.titletype = 'movie' AND (tb.primarytitle ilike $1 or tb.originaltitle ilike $2)
     ORDER BY startyear";
     let titles = sqlx::query(sql)
         .bind(&title_match)
@@ -45,14 +51,14 @@ pub async fn titles_by_name(db_pool: &sqlx::PgPool, title_name: &str) -> Vec<Tit
         .and_then(|rows| {
             let title_vec = rows
                 .iter()
-                .map(|r| TitleBasics::from_db_row(&MyPgRow::from(r)))
-                .collect::<Vec<TitleBasics>>();
+                .map(|r| TitleDetails::from_db_row(&MyPgRow::from(r)))
+                .collect::<Vec<TitleDetails>>();
 
             Ok(title_vec)
         })
         .ok();
 
-    let mut titles_with_principals: Vec<TitleBasics> = vec![];
+    let mut titles_with_principals: Vec<TitleDetails> = vec![];
     if let Some(title_vec) = titles {
         for mut t in title_vec {
             let principals = principals_by_title(db_pool, t.get_title_id()).await;
@@ -73,7 +79,8 @@ async fn principals_by_title(
     let sql = "SELECT tp.nconst, tp.category, tp.job, tp.characters , nb.primaryname, nb.birthyear, nb.deathyear
     FROM title_principals tp
     JOIN name_basics nb ON nb.nconst = tp.nconst
-    WHERE tconst = $1";
+    WHERE tconst = $1
+    ORDER BY tp.ordering";
     sqlx::query(sql)
         .bind(title_id)
         .fetch_all(db_pool)
@@ -134,3 +141,70 @@ pub async fn title_to_names(
         })
         .ok()
 }
+
+pub async fn basics_for_name(
+    db_pool: &sqlx::PgPool,
+    cache: &TitlePrincipalCache,
+    name: &str,
+) -> Result<Vec<NameBasics>, Error> {
+    let sql = "SELECT nconst, primaryname, primaryprofession, birthyear, deathyear, knownfortitles
+    FROM name_basics WHERE primaryname = $1";
+    let name_vec = sqlx::query(sql)
+        .bind(name)
+        .fetch_all(db_pool)
+        .await
+        .and_then(|rows| {
+            let name_vec = rows
+                .iter()
+                .map(|r| NameBasics::from_db_row(&MyPgRow::from(r)))
+                .collect::<Vec<NameBasics>>();
+
+            Ok(name_vec)
+        })?;
+
+    let mut new_name_vec: Vec<NameBasics> = Vec::new();
+    for mut name_basics in name_vec {
+        let tconsts = name_basics.title_ids();
+        // this is prone to SQL injection, but unfortunately sqlx 0.5 has no prepared statement solution for this
+        let sql = format!("SELECT * FROM title_basics WHERE tconst in ( {} )", mk_string(&tconsts, "'", "', '", "'"));
+        
+        let titles = sqlx::query(&sql)
+            .fetch_all(db_pool)
+            .await
+            .and_then(|rows| {
+                let title_vec = rows
+                    .iter()
+                    .map(|r| TitleBasics::from_db_row(&MyPgRow::from(r)))
+                    .collect::<Vec<TitleBasics>>();
+
+                Ok(title_vec)
+            })?;
+
+        let references = cache.ref_count(&name_basics);
+        name_basics.set_details(references, titles);
+        new_name_vec.push(name_basics);
+    }
+
+    new_name_vec.sort_by(|rec1, rec2| rec2.actorroles.cmp(&rec1.actorroles));
+
+    Ok(new_name_vec)
+}
+
+fn mk_string_simple(list: &Vec<String>, delimiter: &str) -> String {
+    let mut str = String::new();
+    let mut dl = "";
+    for s in list {
+        str.push_str(dl);
+        str.push_str(&s);
+        dl = delimiter;
+    }
+    str
+}
+
+fn mk_string(list: &Vec<String>, start:&str, delimiter: &str, end: &str) -> String {
+    let mut str = String::from(start);
+    str.push_str(&mk_string_simple(list, delimiter));
+    str.push_str(end);
+    str
+}
+

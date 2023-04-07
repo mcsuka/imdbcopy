@@ -41,20 +41,21 @@ impl<'r> OpenApiFromRequest<'r> for &'r DbPool {
 /// Search a film or other moving picture by a title fragment
 #[openapi(tag = "IMDB")]
 #[get("/imdb/title?<title_fragment>")]
-async fn titles(db: &DbPool, title_fragment: &str) -> Json<Vec<schemas::TitleBasics>> {
+async fn titles(db: &DbPool, title_fragment: &str) -> Json<Vec<schemas::TitleDetails>> {
     Json(repo::titles_by_name(&db.0, title_fragment).await)
 }
 
-fn mk_string(list: &Vec<String>, delimiter: &str) -> String {
-    let mut str = String::new();
-    let mut dl = "";
-    for s in list {
-        str.push_str(dl);
-        str.push_str(&s);
-        dl = delimiter;
+/// Search for contributors by name
+#[openapi(tag = "IMDB")]
+#[get("/imdb/principal?<name>")]
+async fn contributor(db: &DbPool, cache: &State<schemas::TitlePrincipalCache>, name: &str) -> Result<Json<Vec<schemas::NameBasics>>, String> {
+    let result = repo::basics_for_name(&db.0, cache, name).await;
+    match result {
+        Ok(names) => Ok(Json(names)),
+        Err(err) => Err(format!("{:?}", err)),
     }
-    str
 }
+
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(crate = "rocket::serde")]
@@ -172,7 +173,7 @@ fn rocket() -> _ {
         .manage(schemas::TitlePrincipalCache::new())
         .attach(DbPool::init())
         .attach(TitlePrincipalCacheLoader::init())
-        .mount("/", openapi_get_routes![titles, distance])
+        .mount("/", openapi_get_routes![titles, distance, contributor])
         .mount(
             "/swagger-ui/",
             make_swagger_ui(&SwaggerUIConfig {
