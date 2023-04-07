@@ -15,7 +15,7 @@ pub trait DbRow {
     fn bool(&self, column: &str) -> bool;
     fn opt_string(&self, column: &str) -> Option<String>;
     fn opt_i32(&self, column: &str) -> Option<i32>;
-    fn opt_f32(&self, column: &str) -> Option<f32>;
+    fn opt_f64(&self, column: &str) -> Option<f64>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -55,7 +55,7 @@ pub struct TitleDetails {
     titletype: Option<String>,
     primarytitle: Option<String>,
     originaltitle: Option<String>,
-    averagerating: Option<f32>,
+    averagerating: Option<f64>,
     numvotes: Option<i32>,
     startyear: Option<i32>,
     runtimeminutes: Option<i32>,
@@ -71,7 +71,7 @@ impl TitleDetails {
             titletype: r.opt_string("titletype"),
             primarytitle: r.opt_string("primarytitle"),
             originaltitle: r.opt_string("originaltitle"),
-            averagerating: r.opt_f32("averagerating"),
+            averagerating: r.opt_f64("averagerating"),
             numvotes: r.opt_i32("numvotes"),
             startyear: r.opt_i32("startyear"),
             runtimeminutes: r.opt_i32("runtimeminutes"),
@@ -287,8 +287,8 @@ mod tests {
             self.map.get(column).map(|x| x.parse::<i32>().unwrap())
         }
 
-        fn opt_f32(&self, column: &str) -> Option<f32> {
-            self.map.get(column).map(|x| x.parse::<f32>().unwrap())
+        fn opt_f64(&self, column: &str) -> Option<f64> {
+            self.map.get(column).map(|x| x.parse::<f64>().unwrap())
         }
     }
 
@@ -300,7 +300,7 @@ mod tests {
     const RUNTIMEMINUTES: i32 = 234;
     const GENRES: &str = "[value5, value6]";
     const ISADULT: bool = true;
-    const AVERAGERATING: f32 = 3.33;
+    const AVERAGERATING: f64 = 3.33;
     const NUMVOTES: i32 = 666;
 
     const NCONST: &str = "value7";
