@@ -146,10 +146,18 @@ pub async fn basics_for_name(
     db_pool: &sqlx::PgPool,
     cache: &TitlePrincipalCache,
     name: &str,
+    use_wildcard: bool,
 ) -> Result<Vec<NameBasics>, Error> {
-    let sql = "SELECT nconst, primaryname, primaryprofession, birthyear, deathyear, knownfortitles
-    FROM name_basics WHERE primaryname = $1";
-    let name_vec = sqlx::query(sql)
+    let where_clause = if use_wildcard {
+        "primaryname like $1"
+    } else {
+        "primaryname = $1"
+    };
+    let sql = format!(
+        "SELECT nconst, primaryname, primaryprofession, birthyear, deathyear, knownfortitles FROM name_basics WHERE {}",
+        where_clause
+    );
+    let name_vec = sqlx::query(&sql)
         .bind(name)
         .fetch_all(db_pool)
         .await

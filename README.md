@@ -6,7 +6,7 @@ The project was meant for me to learn Rust and Rocket, there is very little unit
 Search for films (movie, documentary, series, ...) by a title fragment
 
 ## Search for a contributor
-Search for contributors (actors, ctresses, directors, ...) by name
+Search for contributors (actors, actresses, directors, ...) by name
 
 ## Degrees of separation
 Find the shortest distance between 2 actors, via common titles, using Breadth First Search.\
