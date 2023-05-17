@@ -2,41 +2,12 @@ use std::future;
 
 use rocket::futures::StreamExt;
 use rocket::http::Status;
-use rocket_db_pools::sqlx::postgres::PgRow;
+//use rocket_db_pools::sqlx::postgres::PgRow;
 use rocket_db_pools::sqlx::{self, Error, Row};
 
 use crate::schemas::{
-    DbRow, NameBasics, TitleBasics, TitleDetails, TitlePrincipal, TitlePrincipalCache, TitleToNames,
+    NameBasics, TitleBasics, TitleDetails, TitlePrincipal, TitlePrincipalCache, TitleToNames,
 };
-
-struct MyPgRow<'a>(&'a PgRow);
-
-impl<'a> From<&'a PgRow> for MyPgRow<'a> {
-    fn from(value: &'a PgRow) -> Self {
-        MyPgRow(value)
-    }
-}
-
-impl<'a> DbRow for MyPgRow<'a> {
-    fn string(&self, column: &str) -> String {
-        self.0.get::<String, &str>(column)
-    }
-    fn i32(&self, column: &str) -> i32 {
-        self.0.get::<i32, &str>(column)
-    }
-    fn bool(&self, column: &str) -> bool {
-        self.0.try_get::<bool, &str>(column).unwrap_or(false)
-    }
-    fn opt_string(&self, column: &str) -> Option<String> {
-        self.0.try_get::<String, &str>(column).ok()
-    }
-    fn opt_i32(&self, column: &str) -> Option<i32> {
-        self.0.try_get::<i32, &str>(column).ok()
-    }
-    fn opt_f64(&self, column: &str) -> Option<f64> {
-        self.0.try_get::<f64, &str>(column).ok()
-    }
-}
 
 pub async fn titles_by_name(
     db_pool: &sqlx::PgPool,
@@ -55,7 +26,7 @@ pub async fn titles_by_name(
         .and_then(|rows| {
             let title_vec = rows
                 .iter()
-                .map(|r| TitleDetails::from_db_row(&MyPgRow::from(r)))
+                .map(|r| TitleDetails::from_db_row(r))
                 .collect::<Vec<TitleDetails>>();
 
             Ok(title_vec)
@@ -101,7 +72,7 @@ async fn principals_by_title(
         .and_then(|rows| {
             let principals = rows
                 .iter()
-                .map(|r| TitlePrincipal::from_db_row(&MyPgRow::from(r)))
+                .map(|r| TitlePrincipal::from_db_row(r))
                 .collect::<Vec<TitlePrincipal>>();
 
             Ok(principals)
@@ -157,7 +128,7 @@ pub async fn title_to_names(
         .fetch_one(db_pool)
         .await
         .and_then(|r| {
-            let title_to_names = TitleToNames::from_db_row(&MyPgRow::from(&r));
+            let title_to_names = TitleToNames::from_db_row(&r);
             Ok(title_to_names)
         })
         .map_err(|err| {
@@ -185,7 +156,7 @@ pub async fn basics_for_name(
         .and_then(|rows| {
             let name_vec = rows
                 .iter()
-                .map(|r| NameBasics::from_db_row(&MyPgRow::from(r)))
+                .map(|r| NameBasics::from_db_row(r))
                 .collect::<Vec<NameBasics>>();
 
             Ok(name_vec)
@@ -206,7 +177,7 @@ pub async fn basics_for_name(
             .and_then(|rows| {
                 let title_vec = rows
                     .iter()
-                    .map(|r| TitleBasics::from_db_row(&MyPgRow::from(r)))
+                    .map(|r| TitleBasics::from_db_row(r))
                     .collect::<Vec<TitleBasics>>();
 
                 Ok(title_vec)
