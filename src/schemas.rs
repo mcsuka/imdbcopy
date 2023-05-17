@@ -18,6 +18,28 @@ pub trait DbRow {
     fn opt_f64(&self, column: &str) -> Option<f64>;
 }
 
+use rocket_db_pools::sqlx::{postgres::PgRow, Row};
+impl DbRow for PgRow {
+    fn string(&self, column: &str) -> String {
+        self.get::<String, &str>(column)
+    }
+    fn i32(&self, column: &str) -> i32 {
+        self.get::<i32, &str>(column)
+    }
+    fn bool(&self, column: &str) -> bool {
+        self.try_get::<bool, &str>(column).unwrap_or(false)
+    }
+    fn opt_string(&self, column: &str) -> Option<String> {
+        self.try_get::<String, &str>(column).ok()
+    }
+    fn opt_i32(&self, column: &str) -> Option<i32> {
+        self.try_get::<i32, &str>(column).ok()
+    }
+    fn opt_f64(&self, column: &str) -> Option<f64> {
+        self.try_get::<f64, &str>(column).ok()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(crate = "rocket::serde")]
 pub struct TitleBasics {
