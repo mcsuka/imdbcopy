@@ -67,7 +67,6 @@ impl TitleBasics {
             startyear: None,
         }
     }
-
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

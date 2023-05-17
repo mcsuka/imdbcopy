@@ -49,15 +49,16 @@ async fn titles(
     Ok(Json(result))
 }
 
-/// Search for contributors by name
+/// Search for contributors by name. You may use PostgreSQL wildcards.
 #[openapi(tag = "IMDB")]
-#[get("/imdb/principal?<name>")]
+#[get("/imdb/principal?<name>&<use_wildcard>")]
 async fn contributor(
     db: &DbPool,
     cache: &State<schemas::TitlePrincipalCache>,
     name: &str,
+    use_wildcard: bool,
 ) -> Result<Json<Vec<schemas::NameBasics>>, String> {
-    let result = repo::basics_for_name(&db.0, cache, name).await;
+    let result = repo::basics_for_name(&db.0, cache, name, use_wildcard).await;
     match result {
         Ok(names) => Ok(Json(names)),
         Err(err) => Err(format!("{:?}", err)),
@@ -82,8 +83,12 @@ fn busiest_actor(
     }
 }
 
-/// Search the **shortest path between 2 actors**, identified by name.<br/>
-/// In case two actors have the same name, the one with the most films will be used
+/// Search the **shortest path between 2 actors or actresses**, identified by name.<br/>
+/// <ul>
+/// <li>In case two actors have the same name, the one with the most film references will be used.</li>
+/// <li>The parallel flag enables a parallel (multi-CPU) search.</li>
+/// <li>Search is faster when the lesser-known actor is placed first.</li>
+/// </ul>
 #[openapi(tag = "IMDB")]
 #[get("/imdb/distance?<name1>&<name2>&<parallel>")]
 async fn name_distance(
@@ -241,7 +246,7 @@ fn rocket() -> _ {
         .mount(
             "/rapidoc/",
             make_rapidoc(&RapiDocConfig {
-                title: Some("Sandbox Webserver with Rust/Rocket".to_owned()),
+                title: Some("IMDB search with Rust/Rocket".to_owned()),
                 general: GeneralConfig {
                     spec_urls: vec![UrlObject::new("General", "../openapi.json")],
                     ..Default::default()
