@@ -37,6 +37,7 @@ create table title_ratings (
   tconst varchar(255) not null,
   averagerating real not null,
   numvotes integer null,
-  CONSTRAINT title_ratings_pkey PRIMARY KEY (tconst)
+  CONSTRAINT title_ratings_pkey PRIMARY KEY (tconst),
+  CONSTRAINT title_ratings_fk1 FOREIGN KEY (tconst) REFERENCES title_basics("tconst") ON DELETE cascade
 );
 
