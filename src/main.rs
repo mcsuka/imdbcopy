@@ -10,7 +10,7 @@ use rocket::http::Status;
 use rocket::serde::json::Json;
 use rocket::{Orbit, Rocket, State};
 
-use rocket_okapi::gen::OpenApiGenerator;
+use rocket_okapi::r#gen::OpenApiGenerator;
 use rocket_okapi::okapi::schemars;
 use rocket_okapi::request::{OpenApiFromRequest, RequestHeaderInput};
 use rocket_okapi::settings::UrlObject;
